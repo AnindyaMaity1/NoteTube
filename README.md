@@ -25,11 +25,6 @@ This Streamlit app allows you to quickly summarize YouTube videos. It extracts t
     streamlit run your_script_name.py
     ```
 
-## 🖼️ Example
-
-![App Screenshot](http://img.youtube.com/vi/VIDEO_ID/0.jpg)
-*Replace VIDEO_ID with a Youtube video ID to show a thumbnail.*
-
 ## 📝 Code Overview
 
 * **`import streamlit as st`**:  Imports the Streamlit library for creating the app's UI.
