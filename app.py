@@ -1,102 +1,202 @@
 import streamlit as st
 from dotenv import load_dotenv
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 import google.generativeai as genai
 import os
-from youtube_transcript_api import YouTubeTranscriptApi
+import requests
+import tempfile
+from fpdf import FPDF
+import unicodedata
 
 # Load environment variables
 load_dotenv()
-
-# Configure Google Generative AI
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# UI - Header
-st.markdown("<h3 style='text-align: center; color: green;'>Enter YouTube Video Link Below</h3>", unsafe_allow_html=True)
+# App Config
+st.set_page_config(page_title="YouTube Summarizer", layout="centered")
+st.markdown("<h2 style='text-align:center; color:#4CAF50;'>🎥 YouTube Video Summarizer</h2>", unsafe_allow_html=True)
 
-# Input - YouTube Link
-youtube_link = st.text_input("YouTube Link")
-
-# Thumbnail Preview
-if youtube_link:
+# Extract Video ID
+def get_video_id(url):
     try:
-        video_id = youtube_link.split("v=")[1].split("&")[0]
-        st.image(f"http://img.youtube.com/vi/{video_id}/0.jpg", use_container_width=True)
-    except IndexError:
-        st.error("Please provide a valid YouTube link (e.g., https://www.youtube.com/watch?v=VIDEO_ID)")
-
-# Prompt Template
-prompt = """You are a YouTube video summarizer. You will be taking the transcript text 
-and summarizing the entire video and providing the important summary in points within 
-900 words. Please provide the summary of the text given here: """
-
-# Function: Extract Transcript
-def extract_transcript_details(youtube_video_url):
-    try:
-        video_id = youtube_video_url.split("v=")[1].split("&")[0]
-        transcript_text = YouTubeTranscriptApi.get_transcript(video_id)
-        transcript = " ".join([t["text"] for t in transcript_text])
-        return transcript
-    except Exception as e:
-        st.error(f"An error occurred while extracting transcript: {e}")
+        return url.split("v=")[1].split("&")[0]
+    except:
         return None
 
-# Function: Find Suitable Gemini Model
+# Fetch Transcript
+def get_transcript(video_id):
+    try:
+        return YouTubeTranscriptApi.get_transcript(video_id)
+    except TranscriptsDisabled:
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = transcript_list.find_transcript(['en'])
+            return transcript.fetch()
+        except:
+            return None
+    except:
+        return None
+
+def extract_text(transcript_data):
+    return " ".join([entry["text"] for entry in transcript_data]) if transcript_data else None
+
+def make_prompt(transcript_text):
+    return f"""You are a helpful assistant that summarizes YouTube videos. 
+Summarize the transcript below into key points in under 900 words:
+
+{transcript_text}
+"""
+
 def find_suitable_gemini_model():
+    preferred = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
     try:
-        preferred_models = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro", "gemini-1.0-pro"]
-
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-
-        for p_model in preferred_models:
-            for a_model in available_models:
-                if p_model in a_model:
-                    return a_model  # Full name like 'models/gemini-1.5-flash'
-
-        if available_models:
-            return available_models[0]
-
-        st.error("No suitable Gemini model found that supports 'generateContent'.")
-        return None
+        available_models = [
+            m.name for m in genai.list_models()
+            if "generateContent" in m.supported_generation_methods
+        ]
+        for preferred_model in preferred:
+            for available in available_models:
+                if preferred_model in available:
+                    return available
+        return available_models[0] if available_models else None
     except Exception as e:
-        st.error(f"Error listing Gemini models: {e}. Please check your API key and internet connection.")
+        st.error(f"Model lookup failed: {e}")
         return None
 
-# Function: Generate Summary
-def generate_gemini_content(transcript_text, prompt):
+def generate_summary(text):
     model_name = find_suitable_gemini_model()
     if not model_name:
         return None
-
-    # st.info(f"Using Gemini model: {model_name}")
-
     model = genai.GenerativeModel(model_name)
     try:
-        response = model.generate_content(prompt + transcript_text)
+        response = model.generate_content(make_prompt(text))
         return response.text
     except Exception as e:
-        st.error(f"An error occurred while generating summary with {model_name}: {e}")
+        st.error(f"Failed to summarize: {e}")
         return None
 
-# Main Action Button
-if st.button("Get Detailed Notes"):
-    if not youtube_link:
-        st.error("Please enter a YouTube link before getting notes.")
+# Text Cleaner
+def clean_text(text):
+    replacements = {
+        "“": '"', "”": '"', "‘": "'", "’": "'",
+        "–": "-", "—": "-", "…": "...",
+        "•": "-", "→": "->", "←": "<-"
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = unicodedata.normalize("NFKD", text)
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+# Styled PDF Class
+class StyledPDF(FPDF):
+    def header(self):
+        if os.path.exists("logo.png"):
+            self.image("logo.png", 10, 8, 15)
+        self.set_font("Helvetica", 'B', 16)
+        self.set_text_color(0, 102, 204)
+        self.cell(0, 10, "NoteTube - YouTube Summary", ln=True, align="C")
+        self.ln(8)
+        self.set_draw_color(200, 200, 200)
+        self.line(10, self.get_y(), 200, self.get_y())
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font("Helvetica", "I", 9)
+        self.set_text_color(150, 150, 150)
+        self.cell(0, 10, f"Page {self.page_no()}  |  Generated by NoteTube", 0, 0, "C")
+
+    def add_summary(self, summary_text):
+        self.set_font("Times", size=12)
+        self.set_text_color(33, 33, 33)
+        self.set_left_margin(20)
+        self.set_right_margin(20)
+
+        lines = summary_text.replace("*", "").split("\n")
+        for line in lines:
+            clean_line = clean_text(line.strip())
+            if clean_line:
+                self.multi_cell(0, 8, clean_line)
+                self.ln(2)
+
+def generate_styled_pdf(summary_text):
+    pdf = StyledPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+    pdf.add_summary(summary_text)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+        pdf.output(tmp_file.name)
+        return tmp_file.name
+
+# Video Metadata
+def fetch_video_info(video_id):
+    API_KEY = os.getenv("YOUTUBE_API_KEY")
+    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={API_KEY}"
+    res = requests.get(url).json()
+    try:
+        item = res["items"][0]
+        title = item["snippet"]["title"]
+        channel = item["snippet"]["channelTitle"]
+        views = item["statistics"]["viewCount"]
+        date = item["snippet"]["publishedAt"]
+        return title, channel, views, date
+    except:
+        return None, None, None, None
+
+# UI Input
+youtube_link = st.text_input("🔗 Enter YouTube Link", placeholder="https://www.youtube.com/watch?v=VIDEO_ID")
+
+summary = None
+video_id = get_video_id(youtube_link) if youtube_link else None
+
+if video_id:
+    st.image(f"http://img.youtube.com/vi/{video_id}/0.jpg", caption="📌 Video Thumbnail", use_container_width=True)
+    title, channel, views, date = fetch_video_info(video_id)
+    if title:
+        st.markdown(f"**🎬 Title:** {title}")
+        st.markdown(f"**📺 Channel:** {channel}")
+        st.markdown(f"**👁️ Views:** {int(views):,}")
+        st.markdown(f"**📅 Published:** {date[:10]}")
+
+# Generate Summary Button
+if st.button("📝 Generate Notes"):
+    if not video_id:
+        st.error("Invalid YouTube link.")
     else:
-        transcript_text = extract_transcript_details(youtube_link)
-        if transcript_text:
-            summary = generate_gemini_content(transcript_text, prompt)
-            if summary:
-                st.markdown("## 📄 Detailed Notes:")
-                st.write(summary)
+        with st.spinner("🔄 Summarizing..."):
+            transcript_data = get_transcript(video_id)
+            transcript_text = extract_text(transcript_data)
+            if transcript_text:
+                summary = generate_summary(transcript_text)
+                if summary:
+                    st.session_state["summary_text"] = summary
+                    st.success("✅ Summary Generated!")
+                    st.markdown("### 📄 Summary Output")
+                    st.write(summary)
+                else:
+                    st.error("⚠️ Failed to generate summary.")
+            else:
+                st.error("❌ Transcript not available.")
+
+# PDF Download Only
+if "summary_text" in st.session_state:
+    st.markdown("---")
+    st.markdown("### 📥 Download Summary as PDF")
+
+    pdf_path = generate_styled_pdf(st.session_state["summary_text"])
+    with open(pdf_path, "rb") as pdf_file:
+        st.download_button(
+            label="📄 Download PDF",
+            data=pdf_file,
+            file_name=f"summary_{video_id}.pdf",
+            mime="application/pdf"
+        )
 
 # Footer
-footer = '''
-<div style="text-align: center; margin-top: 50px;">
-    <hr style="border-top: 1px solid #ccc;">
-    <p style="color: #666; font-size: 0.9em;">Developed with ❤️ by <strong>Anindya Maity</strong></p>
+st.markdown("""
+<hr>
+<div style='text-align: center; color: gray; font-size: 0.9em;'>
+    Made with ❤️ by <b>Anindya Maity</b> | Powered by <i>Google Gemini & Streamlit</i>
 </div>
-'''
-st.markdown(footer, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
