@@ -10,7 +10,7 @@ import unicodedata
 
 # Load environment variables
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+api_key = st.secrets["GOOGLE_API_KEY"]
 
 # App Config
 st.set_page_config(page_title="YouTube Summarizer", layout="centered")
