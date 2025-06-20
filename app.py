@@ -14,19 +14,6 @@ load_dotenv()
 GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
 
-# Theme Toggle
-theme = st.sidebar.radio("🌗 Theme", ["Light", "Dark"])
-if theme == "Dark":
-    st.markdown("""
-        <style>
-        body { background-color: #0e1117; color: white; }
-        .stButton>button, .stTextInput>div>div>input, .stDownloadButton>button {
-            background-color: #1f222a;
-            color: white;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-
 # App Config
 st.set_page_config(page_title="YouTube Summarizer", layout="centered")
 st.markdown("""
@@ -45,23 +32,25 @@ def get_video_id(url):
     match = re.search(pattern, url)
     return match.group(1) if match else None
 
-# Fetch transcript
+# Fetch transcript (English only)
 def get_transcript(video_id):
     try:
         return YouTubeTranscriptApi.get_transcript(video_id)
     except TranscriptsDisabled:
         try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            transcript = transcript_list.find_transcript(['en', 'en-US', 'en-IN'])
+            transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
+            transcript = transcripts.find_transcript(['en'])
             return transcript.fetch()
         except:
             return None
     except:
         return None
 
+# Convert transcript into plain text
 def extract_text(transcript_data):
     return " ".join([entry["text"] for entry in transcript_data]) if transcript_data else None
 
+# Create prompt for Gemini
 def make_prompt(transcript_text):
     return f"""You are a helpful assistant that summarizes YouTube videos. 
 Summarize the transcript below into key points in under 900 words:
@@ -69,6 +58,7 @@ Summarize the transcript below into key points in under 900 words:
 {transcript_text}
 """
 
+# Select Gemini model
 def find_suitable_gemini_model():
     preferred = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
     try:
@@ -85,6 +75,7 @@ def find_suitable_gemini_model():
         st.error(f"Model lookup failed: {e}")
         return None
 
+# Generate summary using Gemini
 def generate_summary(text):
     model_name = find_suitable_gemini_model()
     if not model_name:
@@ -97,16 +88,7 @@ def generate_summary(text):
         st.error(f"Failed to summarize: {e}")
         return None
 
-def translate_with_gemini(text, language):
-    prompt = f"Translate the following summary into {language}:\n\n{text}"
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        st.warning(f"Translation failed: {e}")
-        return text
-
+# Clean text for PDF rendering
 def clean_text(text):
     replacements = {
         "“": '"', "”": '"', "‘": "'", "’": "'",
@@ -118,6 +100,7 @@ def clean_text(text):
     text = unicodedata.normalize("NFKD", text)
     return text.encode("latin-1", "replace").decode("latin-1")
 
+# Custom PDF class
 class StyledPDF(FPDF):
     def header(self):
         self.set_font("Helvetica", 'B', 16)
@@ -146,6 +129,7 @@ class StyledPDF(FPDF):
                 self.multi_cell(0, 8, clean_line)
                 self.ln(2)
 
+# Generate PDF file
 def generate_styled_pdf(summary_text):
     pdf = StyledPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
@@ -156,6 +140,7 @@ def generate_styled_pdf(summary_text):
         pdf.output(tmp_file.name)
         return tmp_file.name
 
+# Fetch video info via YouTube Data API
 def fetch_video_info(video_id):
     url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={YOUTUBE_API_KEY}"
     res = requests.get(url).json()
@@ -169,12 +154,13 @@ def fetch_video_info(video_id):
     except:
         return None, None, None, None
 
-# UI Input
+# UI Section
 st.markdown("#### 🔗 Enter a YouTube Link")
 youtube_link = st.text_input("", placeholder="e.g. https://youtu.be/d4yCWBGFCEs")
 summary = None
 video_id = get_video_id(youtube_link) if youtube_link else None
 
+# Show video metadata
 if video_id:
     st.image(f"http://img.youtube.com/vi/{video_id}/0.jpg", caption="📌 Video Thumbnail", use_container_width=True)
     title, channel, views, date = fetch_video_info(video_id)
@@ -200,26 +186,18 @@ if st.button("📝 Generate Notes"):
                     st.markdown("### 📄 Summary Output")
                     st.write(summary)
             else:
-                st.error("❌ Transcript not available.")
+                st.error("❌ Transcript not available (must be in English and enabled).")
 
-# Translate + PDF + Rating
+# PDF + Rating
 if "summary_text" in st.session_state:
     st.markdown("---")
-    st.markdown("### 🌐 Translate Summary")
-    lang = st.selectbox("Choose Language", ["English", "Hindi", "Bengali"])
-    translated = st.session_state["summary_text"]
-
-    if lang != "English":
-        translated = translate_with_gemini(translated, lang)
-        st.write(translated)
-
     st.markdown("### 📥 Download as PDF")
-    pdf_path = generate_styled_pdf(translated)
+    pdf_path = generate_styled_pdf(st.session_state["summary_text"])
     with open(pdf_path, "rb") as pdf_file:
         st.download_button(
             label="📄 Download PDF",
             data=pdf_file,
-            file_name=f"summary_{lang.lower()}_{video_id}.pdf",
+            file_name=f"summary_{video_id}.pdf",
             mime="application/pdf"
         )
 
