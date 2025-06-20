@@ -186,7 +186,7 @@ if st.button("📝 Generate Notes"):
                     st.markdown("### 📄 Summary Output")
                     st.write(summary)
             else:
-                st.error("❌ Transcript not available (must be in English and enabled).")
+                st.error("❌ Transcript not available for this video.")
 
 # PDF + Rating
 if "summary_text" in st.session_state:
