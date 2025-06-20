@@ -8,7 +8,6 @@ import tempfile
 from fpdf import FPDF
 import unicodedata
 import re
-from googletrans import Translator
 
 # Load environment variables
 load_dotenv()
@@ -27,9 +26,6 @@ if theme == "Dark":
         }
         </style>
     """, unsafe_allow_html=True)
-
-# Translator
-translator = Translator()
 
 # App Config
 st.set_page_config(page_title="YouTube Summarizer", layout="centered")
@@ -100,6 +96,16 @@ def generate_summary(text):
     except Exception as e:
         st.error(f"Failed to summarize: {e}")
         return None
+
+def translate_with_gemini(text, language):
+    prompt = f"Translate the following summary into {language}:\n\n{text}"
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        st.warning(f"Translation failed: {e}")
+        return text
 
 def clean_text(text):
     replacements = {
@@ -196,7 +202,7 @@ if st.button("📝 Generate Notes"):
             else:
                 st.error("❌ Transcript not available.")
 
-# PDF + Translate + Rating
+# Translate + PDF + Rating
 if "summary_text" in st.session_state:
     st.markdown("---")
     st.markdown("### 🌐 Translate Summary")
@@ -204,8 +210,7 @@ if "summary_text" in st.session_state:
     translated = st.session_state["summary_text"]
 
     if lang != "English":
-        lang_code = {"Hindi": "hi", "Bengali": "bn"}[lang]
-        translated = translator.translate(st.session_state["summary_text"], dest=lang_code).text
+        translated = translate_with_gemini(translated, lang)
         st.write(translated)
 
     st.markdown("### 📥 Download as PDF")
