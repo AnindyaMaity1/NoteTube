@@ -7,34 +7,45 @@ import requests
 import tempfile
 from fpdf import FPDF
 import unicodedata
+import re
 
 # Load environment variables
 load_dotenv()
-api_key = st.secrets["GOOGLE_API_KEY"]
+GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
+YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
 
 # App Config
 st.set_page_config(page_title="YouTube Summarizer", layout="centered")
+st.markdown("""
+    <style>
+        @media only screen and (max-width: 768px) {
+            h2 { font-size: 1.5em !important; }
+            .stButton>button { width: 100% !important; }
+        }
+    </style>
+""", unsafe_allow_html=True)
 st.markdown("<h2 style='text-align:center; color:#4CAF50;'>🎥 YouTube Video Summarizer</h2>", unsafe_allow_html=True)
 
-# Extract Video ID
+# Extract Video ID from various formats
 def get_video_id(url):
-    try:
-        return url.split("v=")[1].split("&")[0]
-    except:
-        return None
+    pattern = r"(?:youtu\.be/|v=|\/embed\/|watch\?.*?v=)([0-9A-Za-z_-]{11})"
+    match = re.search(pattern, url)
+    return match.group(1) if match else None
 
-# Fetch Transcript
+# Fetch transcript
 def get_transcript(video_id):
     try:
         return YouTubeTranscriptApi.get_transcript(video_id)
     except TranscriptsDisabled:
         try:
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            transcript = transcript_list.find_transcript(['en'])
+            transcript = transcript_list.find_transcript(['en', 'en-US', 'en-IN'])
             return transcript.fetch()
-        except:
+        except Exception as e:
+            st.warning(f"Transcript fetch error: {e}")
             return None
-    except:
+    except Exception as e:
+        st.warning(f"Transcript fetch error: {e}")
         return None
 
 def extract_text(transcript_data):
@@ -129,10 +140,9 @@ def generate_styled_pdf(summary_text):
         pdf.output(tmp_file.name)
         return tmp_file.name
 
-# Video Metadata
+# Fetch video metadata
 def fetch_video_info(video_id):
-    API_KEY = st.secrets["YOUTUBE_API_KEY"]
-    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={API_KEY}"
+    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={YOUTUBE_API_KEY}"
     res = requests.get(url).json()
     try:
         item = res["items"][0]
@@ -145,7 +155,9 @@ def fetch_video_info(video_id):
         return None, None, None, None
 
 # UI Input
-youtube_link = st.text_input("🔗 Enter YouTube Link", placeholder="https://www.youtube.com/watch?v=VIDEO_ID")
+st.markdown("#### 🔗 Enter a YouTube Link or Upload a Transcript")
+youtube_link = st.text_input("", placeholder="e.g. https://youtu.be/d4yCWBGFCEs")
+uploaded_file = st.file_uploader("📤 Or upload transcript (.txt)", type="txt")
 
 summary = None
 video_id = get_video_id(youtube_link) if youtube_link else None
@@ -161,25 +173,30 @@ if video_id:
 
 # Generate Summary Button
 if st.button("📝 Generate Notes"):
-    if not video_id:
-        st.error("Invalid YouTube link.")
-    else:
-        with st.spinner("🔄 Summarizing..."):
+    if uploaded_file:
+        transcript_text = uploaded_file.read().decode("utf-8")
+        with st.spinner("🔄 Summarizing uploaded transcript..."):
+            summary = generate_summary(transcript_text)
+    elif video_id:
+        with st.spinner("🔄 Fetching and summarizing transcript..."):
             transcript_data = get_transcript(video_id)
             transcript_text = extract_text(transcript_data)
             if transcript_text:
                 summary = generate_summary(transcript_text)
-                if summary:
-                    st.session_state["summary_text"] = summary
-                    st.success("✅ Summary Generated!")
-                    st.markdown("### 📄 Summary Output")
-                    st.write(summary)
-                else:
-                    st.error("⚠️ Failed to generate summary.")
             else:
-                st.error("❌ Transcript not available.")
+                st.error("❌ Transcript not available and no file uploaded.")
+    else:
+        st.error("⚠️ Provide a valid YouTube link or upload a transcript.")
 
-# PDF Download Only
+    if summary:
+        st.session_state["summary_text"] = summary
+        st.success("✅ Summary Generated!")
+        st.markdown("### 📄 Summary Output")
+        st.write(summary)
+    else:
+        st.error("⚠️ Failed to generate summary.")
+
+# PDF Download
 if "summary_text" in st.session_state:
     st.markdown("---")
     st.markdown("### 📥 Download Summary as PDF")
@@ -189,7 +206,7 @@ if "summary_text" in st.session_state:
         st.download_button(
             label="📄 Download PDF",
             data=pdf_file,
-            file_name=f"summary_{video_id}.pdf",
+            file_name=f"summary_{video_id if video_id else 'manual'}.pdf",
             mime="application/pdf"
         )
 
