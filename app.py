@@ -131,7 +131,7 @@ def generate_styled_pdf(summary_text):
 
 # Video Metadata
 def fetch_video_info(video_id):
-    API_KEY = st.secrets("YOUTUBE_API_KEY")
+    API_KEY = st.secrets["YOUTUBE_API_KEY"]
     url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={API_KEY}"
     res = requests.get(url).json()
     try:
