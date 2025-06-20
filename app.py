@@ -2,15 +2,19 @@ import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled
 import google.generativeai as genai
 import requests
-import os
 import tempfile
 from fpdf import FPDF
 import unicodedata
+import os
 
-# Configure Google Gemini with secret key
+# Load API keys securely
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
 
-# Theme toggle
+# Set page config
+st.set_page_config(page_title="YouTube Summarizer", layout="centered")
+
+# Responsive and theme styles
 theme = st.sidebar.radio("🌗 Theme", ["Light", "Dark"])
 if theme == "Dark":
     st.markdown("""
@@ -22,16 +26,21 @@ if theme == "Dark":
         </style>
     """, unsafe_allow_html=True)
 
-# App config
-st.set_page_config(page_title="YouTube Summarizer", layout="centered")
 st.markdown("""
-    <style>
-    @media only screen and (max-width: 768px) {
-        h2 { font-size: 1.5em !important; }
-        .stButton>button { width: 100% !important; }
+<style>
+@media only screen and (max-width: 768px) {
+    h2 { font-size: 1.5em !important; text-align: center; }
+    .stButton>button, .stTextInput>div>div>input, .stDownloadButton>button {
+        width: 100% !important;
+        font-size: 1em !important;
     }
-    </style>
+    .block-container {
+        padding: 1rem 0.5rem !important;
+    }
+}
+</style>
 """, unsafe_allow_html=True)
+
 st.markdown("<h2 style='text-align:center; color:#4CAF50;'>🎥 YouTube Video Summarizer</h2>", unsafe_allow_html=True)
 
 # Extract video ID
@@ -43,19 +52,18 @@ def get_video_id(url):
     except:
         return None
 
-# Get English transcript only
+# English transcript only
 def get_transcript(video_id):
     try:
-        return YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
-    except TranscriptsDisabled:
-        return None
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript = transcript_list.find_transcript(["en"])
+        return transcript.fetch()
     except:
         return None
 
 def extract_text(transcript_data):
     return " ".join([entry["text"] for entry in transcript_data]) if transcript_data else None
 
-# Prompt for Gemini
 def make_prompt(text):
     return f"You are a helpful assistant that summarizes YouTube videos. Summarize in key points under 900 words:\n\n{text}"
 
@@ -73,10 +81,7 @@ def find_suitable_gemini_model():
         return None
 
 def generate_summary(text):
-    model_name = find_suitable_gemini_model()
-    if not model_name:
-        return None
-    model = genai.GenerativeModel(model_name)
+    model = genai.GenerativeModel(find_suitable_gemini_model())
     try:
         return model.generate_content(make_prompt(text)).text
     except Exception as e:
@@ -94,7 +99,6 @@ def clean_text(text):
     text = unicodedata.normalize("NFKD", text)
     return text.encode("latin-1", "replace").decode("latin-1")
 
-# Styled PDF class
 class StyledPDF(FPDF):
     def header(self):
         if os.path.exists("logo.png"):
@@ -133,10 +137,8 @@ def generate_styled_pdf(summary_text):
         pdf.output(tmp.name)
         return tmp.name
 
-# Fetch metadata
 def fetch_video_info(video_id):
-    API_KEY = st.secrets["YOUTUBE_API_KEY"]
-    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={API_KEY}"
+    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={YOUTUBE_API_KEY}"
     try:
         res = requests.get(url).json()
         item = res["items"][0]
@@ -146,10 +148,9 @@ def fetch_video_info(video_id):
     except:
         return None, None, None, None
 
-# Main UI
+# UI input
 youtube_link = st.text_input("🔗 Enter YouTube Link", placeholder="https://youtu.be/VIDEO_ID")
 video_id = get_video_id(youtube_link) if youtube_link else None
-summary = None
 
 if video_id:
     st.image(f"http://img.youtube.com/vi/{video_id}/0.jpg", use_container_width=True)
@@ -175,12 +176,12 @@ if st.button("📝 Generate Notes"):
                 else:
                     st.error("⚠️ Failed to generate summary.")
             else:
-                st.error("❌ Transcript not available for this video.")
+                st.error("❌ Transcript not available or not in English.")
 
 if "summary_text" in st.session_state:
     st.markdown("---")
     st.markdown("### ⭐ Rate the Output")
-    rating = st.feedback("stars", key="feedback_rating")
+    rating = st.feedback("stars", key="rating_feedback")
     if rating is not None:
         st.info(f"You rated: {rating + 1}/5")
 
