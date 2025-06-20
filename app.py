@@ -8,11 +8,28 @@ import tempfile
 from fpdf import FPDF
 import unicodedata
 import re
+from googletrans import Translator
 
 # Load environment variables
 load_dotenv()
 GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
 YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
+
+# Theme Toggle
+theme = st.sidebar.radio("🌗 Theme", ["Light", "Dark"])
+if theme == "Dark":
+    st.markdown("""
+        <style>
+        body { background-color: #0e1117; color: white; }
+        .stButton>button, .stTextInput>div>div>input, .stDownloadButton>button {
+            background-color: #1f222a;
+            color: white;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+# Translator
+translator = Translator()
 
 # App Config
 st.set_page_config(page_title="YouTube Summarizer", layout="centered")
@@ -26,7 +43,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.markdown("<h2 style='text-align:center; color:#4CAF50;'>🎥 YouTube Video Summarizer</h2>", unsafe_allow_html=True)
 
-# Extract Video ID from various formats
+# Extract Video ID
 def get_video_id(url):
     pattern = r"(?:youtu\.be/|v=|\/embed\/|watch\?.*?v=)([0-9A-Za-z_-]{11})"
     match = re.search(pattern, url)
@@ -41,11 +58,9 @@ def get_transcript(video_id):
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             transcript = transcript_list.find_transcript(['en', 'en-US', 'en-IN'])
             return transcript.fetch()
-        except Exception as e:
-            st.warning(f"Transcript fetch error: {e}")
+        except:
             return None
-    except Exception as e:
-        st.warning(f"Transcript fetch error: {e}")
+    except:
         return None
 
 def extract_text(transcript_data):
@@ -86,7 +101,6 @@ def generate_summary(text):
         st.error(f"Failed to summarize: {e}")
         return None
 
-# Text Cleaner
 def clean_text(text):
     replacements = {
         "“": '"', "”": '"', "‘": "'", "’": "'",
@@ -98,11 +112,8 @@ def clean_text(text):
     text = unicodedata.normalize("NFKD", text)
     return text.encode("latin-1", "replace").decode("latin-1")
 
-# Styled PDF Class
 class StyledPDF(FPDF):
     def header(self):
-        if os.path.exists("logo.png"):
-            self.image("logo.png", 10, 8, 15)
         self.set_font("Helvetica", 'B', 16)
         self.set_text_color(0, 102, 204)
         self.cell(0, 10, "NoteTube - YouTube Summary", ln=True, align="C")
@@ -122,7 +133,6 @@ class StyledPDF(FPDF):
         self.set_text_color(33, 33, 33)
         self.set_left_margin(20)
         self.set_right_margin(20)
-
         lines = summary_text.replace("*", "").split("\n")
         for line in lines:
             clean_line = clean_text(line.strip())
@@ -140,7 +150,6 @@ def generate_styled_pdf(summary_text):
         pdf.output(tmp_file.name)
         return tmp_file.name
 
-# Fetch video metadata
 def fetch_video_info(video_id):
     url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={YOUTUBE_API_KEY}"
     res = requests.get(url).json()
@@ -155,10 +164,8 @@ def fetch_video_info(video_id):
         return None, None, None, None
 
 # UI Input
-st.markdown("#### 🔗 Enter a YouTube Link or Upload a Transcript")
+st.markdown("#### 🔗 Enter a YouTube Link")
 youtube_link = st.text_input("", placeholder="e.g. https://youtu.be/d4yCWBGFCEs")
-uploaded_file = st.file_uploader("📤 Or upload transcript (.txt)", type="txt")
-
 summary = None
 video_id = get_video_id(youtube_link) if youtube_link else None
 
@@ -171,44 +178,49 @@ if video_id:
         st.markdown(f"**👁️ Views:** {int(views):,}")
         st.markdown(f"**📅 Published:** {date[:10]}")
 
-# Generate Summary Button
+# Generate Summary
 if st.button("📝 Generate Notes"):
-    if uploaded_file:
-        transcript_text = uploaded_file.read().decode("utf-8")
-        with st.spinner("🔄 Summarizing uploaded transcript..."):
-            summary = generate_summary(transcript_text)
-    elif video_id:
+    if not video_id:
+        st.error("⚠️ Please provide a valid YouTube link.")
+    else:
         with st.spinner("🔄 Fetching and summarizing transcript..."):
             transcript_data = get_transcript(video_id)
             transcript_text = extract_text(transcript_data)
             if transcript_text:
                 summary = generate_summary(transcript_text)
+                if summary:
+                    st.session_state["summary_text"] = summary
+                    st.success("✅ Summary Generated!")
+                    st.markdown("### 📄 Summary Output")
+                    st.write(summary)
             else:
-                st.error("❌ Transcript not available and no file uploaded.")
-    else:
-        st.error("⚠️ Provide a valid YouTube link or upload a transcript.")
+                st.error("❌ Transcript not available.")
 
-    if summary:
-        st.session_state["summary_text"] = summary
-        st.success("✅ Summary Generated!")
-        st.markdown("### 📄 Summary Output")
-        st.write(summary)
-    else:
-        st.error("⚠️ Failed to generate summary.")
-
-# PDF Download
+# PDF + Translate + Rating
 if "summary_text" in st.session_state:
     st.markdown("---")
-    st.markdown("### 📥 Download Summary as PDF")
+    st.markdown("### 🌐 Translate Summary")
+    lang = st.selectbox("Choose Language", ["English", "Hindi", "Bengali"])
+    translated = st.session_state["summary_text"]
 
-    pdf_path = generate_styled_pdf(st.session_state["summary_text"])
+    if lang != "English":
+        lang_code = {"Hindi": "hi", "Bengali": "bn"}[lang]
+        translated = translator.translate(st.session_state["summary_text"], dest=lang_code).text
+        st.write(translated)
+
+    st.markdown("### 📥 Download as PDF")
+    pdf_path = generate_styled_pdf(translated)
     with open(pdf_path, "rb") as pdf_file:
         st.download_button(
             label="📄 Download PDF",
             data=pdf_file,
-            file_name=f"summary_{video_id if video_id else 'manual'}.pdf",
+            file_name=f"summary_{lang.lower()}_{video_id}.pdf",
             mime="application/pdf"
         )
+
+    st.markdown("### ⭐ Rate this Summary")
+    rating = st.slider("How helpful was the summary?", 1, 5, 3)
+    st.info(f"Your rating: {rating}/5 — Thank you!")
 
 # Footer
 st.markdown("""
