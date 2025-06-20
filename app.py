@@ -7,102 +7,97 @@ import requests
 import tempfile
 from fpdf import FPDF
 import unicodedata
-import re
 
 # Load environment variables
 load_dotenv()
-GOOGLE_API_KEY = st.secrets["GOOGLE_API_KEY"]
-YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# App Config
+# Theme toggle
+theme = st.sidebar.radio("🌗 Theme", ["Light", "Dark"])
+if theme == "Dark":
+    st.markdown("""
+        <style>
+        body { background-color: #0e1117; color: white; }
+        .stButton>button, .stTextInput>div>div>input, .stDownloadButton>button {
+            background-color: #1f222a; color: white;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+# App config
 st.set_page_config(page_title="YouTube Summarizer", layout="centered")
 st.markdown("""
     <style>
-        @media only screen and (max-width: 768px) {
-            h2 { font-size: 1.5em !important; }
-            .stButton>button { width: 100% !important; }
-        }
+    @media only screen and (max-width: 768px) {
+        h2 { font-size: 1.5em !important; }
+        .stButton>button { width: 100% !important; }
+    }
     </style>
 """, unsafe_allow_html=True)
 st.markdown("<h2 style='text-align:center; color:#4CAF50;'>🎥 YouTube Video Summarizer</h2>", unsafe_allow_html=True)
 
-# Extract Video ID
+# Extract video ID
 def get_video_id(url):
-    pattern = r"(?:youtu\.be/|v=|\/embed\/|watch\?.*?v=)([0-9A-Za-z_-]{11})"
-    match = re.search(pattern, url)
-    return match.group(1) if match else None
+    try:
+        if "youtu.be/" in url:
+            return url.split("youtu.be/")[1].split("?")[0]
+        return url.split("v=")[1].split("&")[0]
+    except:
+        return None
 
-# Fetch transcript (English only)
+# Get English transcript
 def get_transcript(video_id):
     try:
         return YouTubeTranscriptApi.get_transcript(video_id)
     except TranscriptsDisabled:
-        try:
-            transcripts = YouTubeTranscriptApi.list_transcripts(video_id)
-            transcript = transcripts.find_transcript(['en'])
-            return transcript.fetch()
-        except:
-            return None
+        return None
     except:
         return None
 
-# Convert transcript into plain text
 def extract_text(transcript_data):
     return " ".join([entry["text"] for entry in transcript_data]) if transcript_data else None
 
-# Create prompt for Gemini
-def make_prompt(transcript_text):
-    return f"""You are a helpful assistant that summarizes YouTube videos. 
-Summarize the transcript below into key points in under 900 words:
+# Prompt for Gemini
+def make_prompt(text):
+    return f"You are a helpful assistant that summarizes YouTube videos. Summarize in key points under 900 words:\n\n{text}"
 
-{transcript_text}
-"""
-
-# Select Gemini model
 def find_suitable_gemini_model():
     preferred = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
     try:
-        available_models = [
-            m.name for m in genai.list_models()
-            if "generateContent" in m.supported_generation_methods
-        ]
-        for preferred_model in preferred:
-            for available in available_models:
-                if preferred_model in available:
-                    return available
-        return available_models[0] if available_models else None
+        models = [m.name for m in genai.list_models() if "generateContent" in m.supported_generation_methods]
+        for p in preferred:
+            for m in models:
+                if p in m:
+                    return m
+        return models[0] if models else None
     except Exception as e:
         st.error(f"Model lookup failed: {e}")
         return None
 
-# Generate summary using Gemini
 def generate_summary(text):
-    model_name = find_suitable_gemini_model()
-    if not model_name:
-        return None
-    model = genai.GenerativeModel(model_name)
+    model = genai.GenerativeModel(find_suitable_gemini_model())
     try:
-        response = model.generate_content(make_prompt(text))
-        return response.text
+        return model.generate_content(make_prompt(text)).text
     except Exception as e:
         st.error(f"Failed to summarize: {e}")
         return None
 
-# Clean text for PDF rendering
 def clean_text(text):
-    replacements = {
+    repl = {
         "“": '"', "”": '"', "‘": "'", "’": "'",
         "–": "-", "—": "-", "…": "...",
         "•": "-", "→": "->", "←": "<-"
     }
-    for old, new in replacements.items():
+    for old, new in repl.items():
         text = text.replace(old, new)
     text = unicodedata.normalize("NFKD", text)
     return text.encode("latin-1", "replace").decode("latin-1")
 
-# Custom PDF class
+# Styled PDF class
 class StyledPDF(FPDF):
     def header(self):
+        if os.path.exists("logo.png"):
+            self.image("logo.png", 10, 8, 15)
         self.set_font("Helvetica", 'B', 16)
         self.set_text_color(0, 102, 204)
         self.cell(0, 10, "NoteTube - YouTube Summary", ln=True, align="C")
@@ -122,60 +117,51 @@ class StyledPDF(FPDF):
         self.set_text_color(33, 33, 33)
         self.set_left_margin(20)
         self.set_right_margin(20)
-        lines = summary_text.replace("*", "").split("\n")
-        for line in lines:
+        for line in summary_text.replace("*", "").split("\n"):
             clean_line = clean_text(line.strip())
             if clean_line:
                 self.multi_cell(0, 8, clean_line)
                 self.ln(2)
 
-# Generate PDF file
 def generate_styled_pdf(summary_text):
     pdf = StyledPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
     pdf.add_summary(summary_text)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        pdf.output(tmp.name)
+        return tmp.name
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        pdf.output(tmp_file.name)
-        return tmp_file.name
-
-# Fetch video info via YouTube Data API
+# Fetch metadata
 def fetch_video_info(video_id):
-    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={YOUTUBE_API_KEY}"
-    res = requests.get(url).json()
+    API_KEY = os.getenv("YOUTUBE_API_KEY")
+    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={API_KEY}"
     try:
+        res = requests.get(url).json()
         item = res["items"][0]
-        title = item["snippet"]["title"]
-        channel = item["snippet"]["channelTitle"]
-        views = item["statistics"]["viewCount"]
-        date = item["snippet"]["publishedAt"]
-        return title, channel, views, date
+        snippet = item["snippet"]
+        stats = item["statistics"]
+        return snippet["title"], snippet["channelTitle"], stats["viewCount"], snippet["publishedAt"]
     except:
         return None, None, None, None
 
-# UI Section
-st.markdown("#### 🔗 Enter a YouTube Link")
-youtube_link = st.text_input("", placeholder="e.g. https://youtu.be/d4yCWBGFCEs")
-summary = None
+# Main UI
+youtube_link = st.text_input("🔗 Enter YouTube Link", placeholder="https://youtu.be/VIDEO_ID")
 video_id = get_video_id(youtube_link) if youtube_link else None
+summary = None
 
-# Show video metadata
 if video_id:
-    st.image(f"http://img.youtube.com/vi/{video_id}/0.jpg", caption="📌 Video Thumbnail", use_container_width=True)
+    st.image(f"http://img.youtube.com/vi/{video_id}/0.jpg", use_container_width=True)
     title, channel, views, date = fetch_video_info(video_id)
     if title:
-        st.markdown(f"**🎬 Title:** {title}")
-        st.markdown(f"**📺 Channel:** {channel}")
-        st.markdown(f"**👁️ Views:** {int(views):,}")
-        st.markdown(f"**📅 Published:** {date[:10]}")
+        st.markdown(f"**🎬 {title}**")
+        st.markdown(f"**📺 {channel} • {int(views):,} views • {date[:10]}**")
 
-# Generate Summary
 if st.button("📝 Generate Notes"):
     if not video_id:
-        st.error("⚠️ Please provide a valid YouTube link.")
+        st.error("Invalid YouTube link.")
     else:
-        with st.spinner("🔄 Fetching and summarizing transcript..."):
+        with st.spinner("🔄 Summarizing..."):
             transcript_data = get_transcript(video_id)
             transcript_text = extract_text(transcript_data)
             if transcript_text:
@@ -185,13 +171,19 @@ if st.button("📝 Generate Notes"):
                     st.success("✅ Summary Generated!")
                     st.markdown("### 📄 Summary Output")
                     st.write(summary)
+                else:
+                    st.error("⚠️ Failed to generate summary.")
             else:
                 st.error("❌ Transcript not available for this video.")
 
-# PDF + Rating
 if "summary_text" in st.session_state:
     st.markdown("---")
-    st.markdown("### 📥 Download as PDF")
+    st.markdown("### ⭐ Rate the Output")
+    rating = st.feedback("stars", key="feedback_rating")
+    if rating is not None:
+        st.info(f"You rated: {rating + 1}/5")
+
+    st.markdown("### 📥 Download Summary as PDF")
     pdf_path = generate_styled_pdf(st.session_state["summary_text"])
     with open(pdf_path, "rb") as pdf_file:
         st.download_button(
@@ -200,10 +192,6 @@ if "summary_text" in st.session_state:
             file_name=f"summary_{video_id}.pdf",
             mime="application/pdf"
         )
-
-    st.markdown("### ⭐ Rate this Summary")
-    rating = st.slider("How helpful was the summary?", 1, 5, 3)
-    st.info(f"Your rating: {rating}/5 — Thank you!")
 
 # Footer
 st.markdown("""
