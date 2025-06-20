@@ -7,14 +7,10 @@ from fpdf import FPDF
 import unicodedata
 import os
 
-# Load API keys securely
+# Configure Gemini with Streamlit secrets
 genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-YOUTUBE_API_KEY = st.secrets["YOUTUBE_API_KEY"]
 
-# Set page config
-st.set_page_config(page_title="YouTube Summarizer", layout="centered")
-
-# Responsive and theme styles
+# Theme toggle
 theme = st.sidebar.radio("🌗 Theme", ["Light", "Dark"])
 if theme == "Dark":
     st.markdown("""
@@ -26,21 +22,8 @@ if theme == "Dark":
         </style>
     """, unsafe_allow_html=True)
 
-st.markdown("""
-<style>
-@media only screen and (max-width: 768px) {
-    h2 { font-size: 1.5em !important; text-align: center; }
-    .stButton>button, .stTextInput>div>div>input, .stDownloadButton>button {
-        width: 100% !important;
-        font-size: 1em !important;
-    }
-    .block-container {
-        padding: 1rem 0.5rem !important;
-    }
-}
-</style>
-""", unsafe_allow_html=True)
-
+# App config
+st.set_page_config(page_title="YouTube Summarizer", layout="centered")
 st.markdown("<h2 style='text-align:center; color:#4CAF50;'>🎥 YouTube Video Summarizer</h2>", unsafe_allow_html=True)
 
 # Extract video ID
@@ -52,7 +35,7 @@ def get_video_id(url):
     except:
         return None
 
-# English transcript only
+# Get English transcript only
 def get_transcript(video_id):
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
@@ -137,8 +120,10 @@ def generate_styled_pdf(summary_text):
         pdf.output(tmp.name)
         return tmp.name
 
+# Fetch metadata
 def fetch_video_info(video_id):
-    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={YOUTUBE_API_KEY}"
+    API_KEY = st.secrets["YOUTUBE_API_KEY"]
+    url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id={video_id}&key={API_KEY}"
     try:
         res = requests.get(url).json()
         item = res["items"][0]
@@ -148,7 +133,7 @@ def fetch_video_info(video_id):
     except:
         return None, None, None, None
 
-# UI input
+# UI
 youtube_link = st.text_input("🔗 Enter YouTube Link", placeholder="https://youtu.be/VIDEO_ID")
 video_id = get_video_id(youtube_link) if youtube_link else None
 
@@ -176,8 +161,9 @@ if st.button("📝 Generate Notes"):
                 else:
                     st.error("⚠️ Failed to generate summary.")
             else:
-                st.error("❌ Transcript not available or not in English.")
+                st.error("❌ Transcript not available or must be in English.")
 
+# PDF + Feedback
 if "summary_text" in st.session_state:
     st.markdown("---")
     st.markdown("### ⭐ Rate the Output")
